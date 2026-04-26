@@ -49,6 +49,7 @@
     let autolevelButton = null;
     let pluginAutolevelButton = null;
     let stemInputs = Object.create(null);
+    let pluginStemInputs = Object.create(null);
     let eqInputs = [];
     let pluginEqInputs = [];
     let audioCtx = null;
@@ -61,6 +62,8 @@
     let stemSourceByAudio = new WeakMap();
     let stemsBridgeInstalled = false;
     let stemsBridgeByStem = Object.create(null);
+    let stemBootstrapTimers = [];
+    let hideStylesInstalled = false;
 
     function cloneState(state) {
         return {
@@ -384,6 +387,25 @@
         }
     }
 
+    function clearStemBootstrapTimers() {
+        stemBootstrapTimers.forEach((t) => clearTimeout(t));
+        stemBootstrapTimers = [];
+    }
+
+    function scheduleStemVolumeBootstrapSync() {
+        clearStemBootstrapTimers();
+        const delays = [120, 320, 650, 1100, 1800];
+        delays.forEach((delay) => {
+            const timer = setTimeout(() => {
+                const state = getCurrentState();
+                STEM_KEYS.forEach((stem) => {
+                    setStemVolume(stem, state.levels[stem], true);
+                });
+            }, delay);
+            stemBootstrapTimers.push(timer);
+        });
+    }
+
     function applyEqToGraph(eqValues) {
         if (isStemsPluginActive()) return;
         if (!filterChain.length) return;
@@ -407,7 +429,7 @@
         }
         if (pluginEqInputs[index]) {
             pluginEqInputs[index].value = String(Math.round(clamped));
-            if (pluginEqInputs[index]._valueTag) pluginEqInputs[index]._valueTag.textContent = `${Math.round(clamped)} dB`;
+            if (pluginEqInputs[index]._valueTag) pluginEqInputs[index]._valueTag.textContent = `${Math.round(clamped)}`;
         }
 
         if (skipSave) return;
@@ -486,6 +508,11 @@
                 stemInputs[stem].value = String(val);
                 if (stemInputs[stem]._pctTag) stemInputs[stem]._pctTag.textContent = `${val}%`;
             }
+            if (pluginStemInputs[stem]) {
+                const val = Math.round((state.levels[stem] || 0) * 100);
+                pluginStemInputs[stem].value = String(val);
+                if (pluginStemInputs[stem]._pctTag) pluginStemInputs[stem]._pctTag.textContent = `${val}%`;
+            }
         });
 
         EQ_BANDS.forEach((_, idx) => {
@@ -498,7 +525,7 @@
             if (!pluginEqInputs[idx]) return;
             const v = Math.round(Number(state.eq[idx]) || 0);
             pluginEqInputs[idx].value = String(v);
-            if (pluginEqInputs[idx]._valueTag) pluginEqInputs[idx]._valueTag.textContent = `${v} dB`;
+            if (pluginEqInputs[idx]._valueTag) pluginEqInputs[idx]._valueTag.textContent = `${v}`;
         });
 
         if (profileSelect) profileSelect.value = state.selectedProfile || DEFAULT_PROFILE;
@@ -574,6 +601,18 @@
                 el.dataset.stemMixerHidden = '1';
             }
         });
+    }
+
+    function ensureHideStemsUiStyles() {
+        if (hideStylesInstalled) return;
+        const style = document.createElement('style');
+        style.id = 'stem-mixer-hide-stems-ui';
+        style.textContent = [
+            '#player-controls #stems-mixer { display: none !important; }',
+            '#player-controls [data-stems-ui] { display: none !important; }'
+        ].join('\n');
+        document.head.appendChild(style);
+        hideStylesInstalled = true;
     }
 
     function hideStemsSettingsOptions() {
@@ -670,18 +709,55 @@
     }
 
     function ensurePluginScreenControls() {
+        const stemRowsHost = document.getElementById('stem-mixer-plugin-stem-rows');
         const rowsHost = document.getElementById('stem-mixer-plugin-eq-rows');
-        if (!rowsHost) return;
+        if (!rowsHost || !stemRowsHost) return;
         const state = getCurrentState();
 
         if (rowsHost.dataset.stemMixerBuilt !== '1') {
-            EQ_BANDS.forEach((freq, idx) => {
+            STEM_KEYS.forEach((stem) => {
                 const row = document.createElement('label');
-                row.style.cssText = 'display:grid;grid-template-columns:50px 1fr 44px;gap:10px;align-items:center;';
+                row.style.cssText = 'display:grid;grid-template-columns:58px 1fr 42px;gap:10px;align-items:center;';
 
                 const name = document.createElement('span');
-                name.textContent = freq >= 1000 ? `${Math.round(freq / 1000)}k` : `${freq}`;
+                name.textContent = STEM_LABELS[stem];
                 name.style.cssText = 'font-size:11px;color:#b5bfd5;';
+
+                const input = document.createElement('input');
+                input.type = 'range';
+                input.min = '0';
+                input.max = '100';
+                input.step = '1';
+                input.value = String(Math.round((state.levels[stem] || 0) * 100));
+                input.style.cssText = 'width:100%;accent-color:#6ea8ff;';
+                input.addEventListener('input', () => {
+                    const level = parseInt(input.value, 10) / 100;
+                    value.textContent = `${input.value}%`;
+                    setStemVolume(stem, level);
+                });
+                pluginStemInputs[stem] = input;
+
+                const value = document.createElement('span');
+                value.textContent = `${input.value}%`;
+                value.style.cssText = 'font-size:10px;color:#8b95aa;text-align:right;';
+                input._valueTag = value;
+
+                row.appendChild(name);
+                row.appendChild(input);
+                row.appendChild(value);
+                stemRowsHost.appendChild(row);
+            });
+
+            EQ_BANDS.forEach((freq, idx) => {
+                const band = document.createElement('div');
+                band.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;min-width:28px;';
+
+                const top = document.createElement('span');
+                top.textContent = '+12';
+                top.style.cssText = 'font-size:9px;color:#7f8aa3;line-height:1;';
+
+                const sliderBox = document.createElement('div');
+                sliderBox.style.cssText = 'width:18px;height:120px;display:flex;align-items:center;justify-content:center;';
 
                 const input = document.createElement('input');
                 input.type = 'range';
@@ -689,22 +765,33 @@
                 input.max = '12';
                 input.step = '1';
                 input.value = String(Math.round(state.eq[idx] || 0));
-                input.style.cssText = 'width:100%;accent-color:#6ea8ff;';
+                input.style.cssText = 'width:120px;height:16px;transform:rotate(-90deg);transform-origin:center;accent-color:#6ea8ff;';
                 input.addEventListener('input', () => {
                     const db = parseInt(input.value, 10);
                     setEqBand(idx, db);
                 });
                 pluginEqInputs[idx] = input;
 
-                const value = document.createElement('span');
-                value.textContent = `${Math.round(state.eq[idx] || 0)} dB`;
-                value.style.cssText = 'font-size:10px;color:#8b95aa;text-align:right;';
-                input._valueTag = value;
+                const mid = document.createElement('span');
+                mid.textContent = '0';
+                mid.style.cssText = 'font-size:9px;color:#d1d9ea;line-height:1;';
+                input._valueTag = mid;
 
-                row.appendChild(name);
-                row.appendChild(input);
-                row.appendChild(value);
-                rowsHost.appendChild(row);
+                const bot = document.createElement('span');
+                bot.textContent = '-12';
+                bot.style.cssText = 'font-size:9px;color:#7f8aa3;line-height:1;';
+
+                const label = document.createElement('span');
+                label.textContent = freq >= 1000 ? `${Math.round(freq / 1000)}k` : String(freq);
+                label.style.cssText = 'font-size:9px;color:#b5bfd5;';
+
+                band.appendChild(top);
+                sliderBox.appendChild(input);
+                band.appendChild(sliderBox);
+                band.appendChild(mid);
+                band.appendChild(bot);
+                band.appendChild(label);
+                rowsHost.appendChild(band);
             });
 
             pluginAutolevelButton = document.getElementById('stem-mixer-plugin-autolevel');
@@ -968,6 +1055,7 @@
     }
 
     function onUiUpdate() {
+        ensureHideStemsUiStyles();
         ensurePluginScreenControls();
         ensureMixerButton();
         ensureMixerPanel();
@@ -1037,6 +1125,7 @@
         window.playSong = async function (...args) {
             const result = await originalPlaySong.apply(this, args);
             setTimeout(queueUiUpdate, 50);
+            scheduleStemVolumeBootstrapSync();
             return result;
         };
     }
