@@ -181,6 +181,10 @@
         const canonical = canonicalStemId(stemId);
         if (!canonical) return;
         const audio = sourceNode && sourceNode.mediaElement ? sourceNode.mediaElement : null;
+        // Never bridge the core <audio id="audio"> — it's the playback timing
+        // master (loaded with stems[0]). Bridging it makes setStemVolume()
+        // un-mute the timing master, leaking that stem past the stems graph.
+        if (audio && audio.id === 'audio') return;
         stemsBridgeByStem[canonical] = {
             source: sourceNode || null,
             gain: gainNode || null,
@@ -230,6 +234,11 @@
 
         audios.forEach((audio) => {
             const id = String(audio.id || '').toLowerCase();
+            // The core <audio id="audio"> is the playback timing master, never
+            // a stem — even though highway.js loads it with stems[0] (often the
+            // guitar stem). Treating it as a stem un-mutes the timing master
+            // and leaks that stem straight to the speakers.
+            if (id === 'audio') return;
             const cls = String(audio.className || '').toLowerCase();
             const src = String(audio.currentSrc || audio.src || '').toLowerCase();
             const srcDecoded = safeDecodeUrl(src).toLowerCase();
@@ -293,7 +302,8 @@
         const bridged = stemsBridgeByStem[canonical];
         if (bridged) {
             if (bridged.gain && bridged.gain.gain) bridged.gain.gain.value = clamped;
-            if (bridged.audio) {
+            // Defensive: never write through to the core timing element.
+            if (bridged.audio && bridged.audio.id !== 'audio') {
                 bridged.audio.muted = false;
                 bridged.audio.volume = 1;
             }
